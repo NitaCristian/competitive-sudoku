@@ -133,3 +133,8 @@ def apply_move(state: GameState, move: Move) -> Tuple[GameState, int]:
             new_state.current_player = 3 - player  # nobody can move; game over
 
     return new_state, reward
+
+def evalGameState(game_state: GameState, technique = 'naive'):
+      if technique == 'naive':
+          return game_state.scores[0] - game_state.scores[1]
+
