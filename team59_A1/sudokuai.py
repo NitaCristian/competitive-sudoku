@@ -2,108 +2,102 @@
 #  Software License, (See accompanying file LICENSE or copy at
 #  https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from collections import defaultdict
-import random
-from competitive_sudoku.sudoku import GameState
+from competitive_sudoku.sudoku import GameState, Move
 import competitive_sudoku.sudokuai
 
-from .game_logic import legal_moves
-import time
-from competitive_sudoku.sudoku import GameState, Move, SudokuBoard, TabooMove, Square
-import competitive_sudoku.sudokuai
-from typing import Tuple
-import math
+from .game_logic import legal_moves, apply_move, evalGameState, completed_regions, REWARDS
 
+INF = float('inf')
 
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     """
-    Sudoku AI that computes a move for a given sudoku configuration.
+    Sudoku AI using minimax search with alpha-beta pruning and iterative deepening.
     """
 
     def __init__(self):
         super().__init__()
+        self.me = 1
 
-     #very simple difference of the scores
-    def evalGameState(game_state: GameState, technique = 'naive'):
-      if technique == 'naive':
-          return game_state.scores[0] - game_state.scores[1]
+    def evaluate(self, state: GameState) -> float:
+        """
+        Score of `state` from OUR point of view (higher = better for us).
+        evalGameState scores from player 1's point of view, so flip it if we are player 2.
+        """
+        score = evalGameState(state)
+        return score if self.me == 1 else -score
 
-    # TODO: replace with alpha-beta minimax search (uses game_logic.legal_moves / apply_move).
     def compute_best_move(self, game_state: GameState) -> None:
+        self.me = game_state.current_player
+
         moves = legal_moves(game_state)
-        if moves:
-            self.propose_move(random.choice(moves))
-    # N.B. This is a very naive implementation.
-    def compute_best_move_differenImplementation(self, game_state: GameState) -> None:
-        N = game_state.board.N
+        if not moves:
+            return
 
-        # Check whether a cell is empty, a value in that cell is not taboo, and that cell is allowed
-        def possible(i, j, value):
-            return game_state.board.get((i, j)) == SudokuBoard.empty \
-                   and not TabooMove((i, j), value) in game_state.taboo_moves \
-                       and (i, j) in game_state.player_squares()
+        children = []
+        for move in moves:
+            child, reward = apply_move(game_state, move)
+            children.append((move, child, reward))
+        children.sort(key=lambda c: -c[2])
 
-        all_moves = [Move((i, j), value) for i in range(N) for j in range(N)
-                     for value in range(1, N+1) if possible(i, j, value)]
+        best_move = children[0][0]
+        self.propose_move(best_move)
 
+        empty_squares = game_state.board.squares.count(0)
+        for depth in range(1, empty_squares + 1):
+            children.sort(key=lambda c: c[0] != best_move)
 
-        def checkForbiddenValues(game_state: GameState, N: int):
+            alpha = -INF
+            depth_best_move, depth_best_value = None, -INF
+            for move, child, _ in children:
+                value = self.alphabeta(child, depth - 1, alpha, INF)
+                if value > depth_best_value:
+                    depth_best_move, depth_best_value = move, value
+                alpha = max(alpha, value)
 
-            boxSize = math.isqrt(N)
-            forbiddenRows = defaultdict(set)
-            forbiddenColumns = defaultdict(set)
-            forbiddenBoxes = defaultdict(set)
-            # forbiddenRows = {}
-            # forbiddenColumns = {}
-            # forbiddenBoxes = {}
+            best_move = depth_best_move
+            self.propose_move(best_move)
 
-            for i in range(N):
-                for j in range(N):
-                    targetSquare = (i, j)
-                    value = game_state.board.get(targetSquare)
-                    if value != 0:
-                      forbiddenRows[i].add(value)
-                      forbiddenColumns[j].add(value)
-                      forbiddenBoxes[(i // boxSize, j // boxSize)].add(value)
-            return forbiddenRows, forbiddenColumns, forbiddenBoxes
+    def alphabeta(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
+        """
+        Minimax value of `state` searched `depth` plies deep, with alpha-beta pruning.
+        Whether this is a MAX or MIN node is decided by whose turn it is, not by alternating
+        levels, because apply_move can give a player two turns in a row when the opponent
+        has no square to play on.
+        """
+        if depth == 0:
+            return self.evaluate(state)
 
-            #print(game_state.board)
+        moves = legal_moves(state)
+        if not moves:  # board full or player stuck
+            return self.evaluate(state)
 
-        notAllowedRowVals, notAllowedColVals, notAllowedBoxes = checkForbiddenValues(game_state, N)
+        moves.sort(key=lambda mv: -self.immediate_reward(state, mv))
 
-        #python simulate_game.py --first=team59_A1; just for quick access
-        def filterLegalMoves(all_moves: list[Move], game_state: GameState, notAllowedRow, notAllowedCol, notAllowedBox):
-            boxSize = math.isqrt(N)
-            legal_moves = []
-            for move in all_moves:
-                notPasses = 0
-                if move.value in notAllowedRow[move.square[0]]:
-                  notPasses = 1
-                if move.value in notAllowedCol[move.square[1]]:
-                  notPasses = 1
-                if move.value in notAllowedBox[(move.square[0] // boxSize, move.square[1] // boxSize)]:
-                  notPasses = 1
-                if notPasses == 0:
-                   legal_moves.append(move)
+        if state.current_player == self.me:  # MAX node
+            value = -INF
+            for move in moves:
+                child, _ = apply_move(state, move)
+                value = max(value, self.alphabeta(child, depth - 1, alpha, beta))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break  # beta cut-off
+            return value
+        else:  # MIN node
+            value = INF
+            for move in moves:
+                child, _ = apply_move(state, move)
+                value = min(value, self.alphabeta(child, depth - 1, alpha, beta))
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break  # alpha cut-off
+            return value
 
-            return legal_moves
-
-
-
-
-
-
-
-
-        print("Current game state: ", self.evalGameState(game_state))
-        # print("Current occupied squares: ")
-        #checkForbiddenValues(game_state, N)
-        all_moves = filterLegalMoves(all_moves, game_state, notAllowedRowVals, notAllowedColVals, notAllowedBoxes)
-        # print("Player 1 all moves")
-        print([(move.square, move.value) for move in all_moves])
-        move = random.choice(all_moves)
-
-        self.propose_move(move)
-        while True:
-            time.sleep(0.2)
-            self.propose_move(random.choice(all_moves))
+    @staticmethod
+    def immediate_reward(state: GameState, move: Move) -> int:
+        """Points `move` would score, computed by placing the value temporarily (no copy)."""
+        board = state.board
+        k = board.square2index(move.square)
+        board.squares[k] = move.value
+        reward = REWARDS[completed_regions(board, move.square)]
+        board.squares[k] = 0
+        return reward
