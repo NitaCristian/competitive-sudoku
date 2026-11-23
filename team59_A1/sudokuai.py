@@ -2,15 +2,18 @@
 #  Software License, (See accompanying file LICENSE or copy at
 #  https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from collections import defaultdict
-import math
-
 from competitive_sudoku.sudoku import GameState, Move
 import competitive_sudoku.sudokuai
 
-from .game_logic import legal_moves, apply_move, completed_regions, REWARDS, allowed_cells
+from .game_logic import (
+    legal_moves,
+    apply_move,
+    completed_regions,
+    REWARDS,
+)
 
-INF = float('inf')
+INF = float("inf")
+
 
 class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
     """
@@ -26,126 +29,91 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         Score of `state` from OUR point of view (higher = better for us).
         evalGameState scores from player 1's point of view, so flip it if we are player 2.
         """
-        score = self.evalGameState(game_state= state, N = state.board.N, technique='non-naive')
+        score = self.evalGameState(game_state=state, N=state.board.N, technique="non-naive")
         return score if self.me == 1 else -score
-     #very simple difference of the scores
 
+    def evalGameState(self, game_state: GameState, N: int, technique="naive"):
+        scoreDiff = game_state.scores[0] - game_state.scores[1]
+        if technique == "naive":
+            return scoreDiff
 
-    def filterLegalMoves(self, all_moves: list[Move], game_state: GameState, notAllowedRow, notAllowedCol, notAllowedBox, N: int):
-            boxSize = math.isqrt(N)
-            legal_moves = []
-            for move in all_moves:
-                notPasses = 0
-                if move.value in notAllowedRow[move.square[0]]:
-                  notPasses = 1
-                if move.value in notAllowedCol[move.square[1]]:
-                  notPasses = 1
-                if move.value in notAllowedBox[(move.square[0] // boxSize, move.square[1] // boxSize)]:
-                  notPasses = 1
-                if notPasses == 0:
-                   legal_moves.append(move)
+        m = game_state.board.m
+        n = game_state.board.n
+        full = set(range(1, N + 1))
+        squares = game_state.board.squares
 
-            return legal_moves
+        def reachableCells(allowed, occupied):
+            """
+            Empty cells a player may play on: empty cells of their starting region plus
+            empty (diagonal) neighbours of cells they occupy. Same result as
+            GameState.player_squares(), but much faster (no sorting, no method calls per cell).
+            """
+            if allowed is None:  # classic mode: every empty cell
+                return [divmod(k, N) for k, v in enumerate(squares) if v == 0]
+            cells = {(i, j) for i, j in allowed if squares[i * N + j] == 0}
+            for r, c in occupied:
+                for i in range(max(r - 1, 0), min(r + 2, N)):
+                    for j in range(max(c - 1, 0), min(c + 2, N)):
+                        if squares[i * N + j] == 0:
+                            cells.add((i, j))
+            return cells
 
+        rows = [set() for _ in range(N)]
+        cols = [set() for _ in range(N)]
+        blocks = [set() for _ in range(N)]
+        rowEmpty, colEmpty, blockEmpty = [0] * N, [0] * N, [0] * N
 
-    def checkForbiddenValues(self, game_state: GameState, N: int):
+        for k, v in enumerate(squares):
+            i, j = divmod(k, N)
+            b = (i // m) * m + j // n
+            if v != 0:
+                rows[i].add(v)
+                cols[j].add(v)
+                blocks[b].add(v)
+            else:
+                rowEmpty[i] += 1
+                colEmpty[j] += 1
+                blockEmpty[b] += 1
 
-      boxSize = math.isqrt(N)
-      forbiddenRows = defaultdict(set)
-      forbiddenColumns = defaultdict(set)
-      forbiddenBoxes = defaultdict(set)
-                # forbiddenRows = {}
-                # forbiddenColumns = {}
-                # forbiddenBoxes = {}
+        def features(cells):
+            capture = 0
+            safety = 0
+            mobility = 0
+            for i, j in cells:
+                if squares[i * N + j] != 0:
+                    continue
+                b = (i // m) * m + j // n
+                if not (full - rows[i] - cols[j] - blocks[b]):
+                    continue
+                mobility += 1
+                completeCheck = (
+                    (rowEmpty[i] == 1) + (colEmpty[j] == 1) + (blockEmpty[b] == 1)
+                )
+                if completeCheck:
+                    capture += REWARDS[completeCheck]
+                elif not (rowEmpty[i] == 2 or colEmpty[j] == 2 or blockEmpty[b] == 2):
+                    safety += 1
+            return capture, safety, mobility
 
-      for i in range(N):
-          for j in range(N):
-              targetSquare = (i, j)
-              value = game_state.board.get(targetSquare)
-              if value != 0:
-                forbiddenRows[i].add(value)
-                forbiddenColumns[j].add(value)
-                forbiddenBoxes[(i // boxSize, j // boxSize)].add(value)
-      return forbiddenRows, forbiddenColumns, forbiddenBoxes
+        captureSelf, safetySelf, mobilitySelf = features(
+            reachableCells(game_state.allowed_squares1, game_state.occupied_squares1)
+        )
+        captureEnemy, safetyEnemy, mobilityEnemy = features(
+            reachableCells(game_state.allowed_squares2, game_state.occupied_squares2)
+        )
 
-                #print(game_state.board)
-
-
-    def evalGameState(self, game_state: GameState, N: int, technique = 'naive'):
-
-
-
-      scoreDiff = game_state.scores[0] - game_state.scores[1]
-      if technique == 'naive':
-          return scoreDiff
-
-      def currentPlayerCells(game_state: GameState, player):
-          saved = game_state.current_player
-          game_state.current_player = player
-          try:
-              cells = allowed_cells(game_state)
-          finally:
-              game_state.current_player = saved
-          return cells
-
-      gameBoard = game_state.board
-      m = game_state.board.m
-      n = game_state.board.n
-      forbiddenRows, forbiddenCols, forbiddenBoxes = self.checkForbiddenValues(game_state, N)
-      rowEmpty, colEmpty, boxEmpty = defaultdict(int), defaultdict(int), defaultdict(int)
-      full = set(range(1, N + 1))
-      squares = gameBoard.squares
-
-      rows = [set() for _ in range(N)]
-      cols = [set() for _ in range(N)]
-      blocks = [set() for _ in range(N)]
-      rowEmpty, colEmpty, blockEmpty = [0] * N, [0] * N, [0] * N
-
-      for k, v in enumerate(squares):
-        i, j = divmod(k, N)
-        b = (i // m) * m + j // n
-        if v != 0:
-            rows[i].add(v); cols[j].add(v); blocks[b].add(v)
+        if game_state.current_player == 1:
+            threat = captureSelf - 0.5 * captureEnemy
         else:
-            rowEmpty[i] += 1; colEmpty[j] += 1; blockEmpty[b] += 1
+            threat = 0.5 * captureSelf - captureEnemy
 
-
-      def features(cells):
-          capture = 0
-          safety = 0
-          mobility = 0
-          for (i, j) in cells:
-              if squares[i*N + j] != 0:
-                  continue
-              b = (i // m) * m + j // n
-              if not (full - rows[i] - cols[j] - blocks[b]):
-                continue
-              mobility += 1
-              completeCheck = (rowEmpty[i] == 1) + (colEmpty[j] == 1) + (blockEmpty[b] == 1)
-              if completeCheck:
-                  capture += REWARDS[completeCheck]
-              elif not (rowEmpty[i] == 2 or colEmpty[j] == 2 or blockEmpty[b] == 2):
-                safety += 1
-          return capture, safety, mobility
-
-      captureSelf, safetySelf, mobilitySelf = features(currentPlayerCells(game_state=game_state, player=1))
-      captureEnemy, safetyEnemy, mobilityEnemy = features(currentPlayerCells(game_state=game_state, player=2))
-
-      if game_state.current_player == 1:
-        threat = captureSelf - 0.5 * captureEnemy
-      else:
-        threat = 0.5 * captureSelf - captureEnemy
-
-      riskWeights = (1.0, 1.0, 0.3, 0.05)                 # tuple, not set
-      return (riskWeights[0] * scoreDiff + riskWeights[1] * threat
-            + riskWeights[2] * (safetySelf - safetyEnemy) + riskWeights[3] * (mobilitySelf - mobilityEnemy))
-
-
-
-
-
-
-
+        riskWeights = (1.0, 1.0, 0.3, 0.05)  # tuple, not set
+        return (
+            riskWeights[0] * scoreDiff
+            + riskWeights[1] * threat
+            + riskWeights[2] * (safetySelf - safetyEnemy)
+            + riskWeights[3] * (mobilitySelf - mobilityEnemy)
+        )
 
     def compute_best_move(self, game_state: GameState) -> None:
         self.me = game_state.current_player
@@ -178,7 +146,9 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
             best_move = depth_best_move
             self.propose_move(best_move)
 
-    def alphabeta(self, state: GameState, depth: int, alpha: float, beta: float) -> float:
+    def alphabeta(
+        self, state: GameState, depth: int, alpha: float, beta: float
+    ) -> float:
         """
         Minimax value of `state` searched `depth` plies deep, with alpha-beta pruning.
         Whether this is a MAX or MIN node is decided by whose turn it is, not by alternating
@@ -222,27 +192,3 @@ class SudokuAI(competitive_sudoku.sudokuai.SudokuAI):
         reward = REWARDS[completed_regions(board, move.square)]
         board.squares[k] = 0
         return reward
-
-
-        #python simulate_game.py --first=team59_A1; just for quick access
-
-
-
-
-
-
-
-
-        notAllowedRowVals, notAllowedColVals, notAllowedBoxes = self.checkForbiddenValues(game_state, N)
-        print("Current game state: ", self.evalGameState(game_state))
-        # print("Current occupied squares: ")
-        #checkForbiddenValues(game_state, N)
-        all_moves = self.filterLegalMoves(all_moves, game_state, notAllowedRowVals, notAllowedColVals, notAllowedBoxes, N)
-        # print("Player 1 all moves")
-        print([(move.square, move.value) for move in all_moves])
-        move = random.choice(all_moves)
-
-        self.propose_move(move)
-        while True:
-            time.sleep(0.2)
-            self.propose_move(random.choice(all_moves))
